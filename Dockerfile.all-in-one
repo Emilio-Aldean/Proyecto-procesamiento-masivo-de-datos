@@ -1,0 +1,89 @@
+# Dockerfile único para todo el stack de análisis de criminalidad
+FROM openjdk:8-jdk-slim
+
+# Variables de entorno
+ENV KAFKA_VERSION=2.13-3.5.1
+ENV SPARK_VERSION=3.2.0
+ENV HADOOP_VERSION=3.2
+ENV KAFKA_HOME=/opt/kafka
+ENV SPARK_HOME=/opt/spark
+ENV PATH=$PATH:$KAFKA_HOME/bin:$SPARK_HOME/bin
+
+# Instalar dependencias del sistema
+RUN apt-get update && apt-get install -y \
+    wget \
+    curl \
+    python3 \
+    python3-pip \
+    procps \
+    netcat \
+    && rm -rf /var/lib/apt/lists/*
+
+# Crear directorios
+RUN mkdir -p /opt/kafka /opt/spark /app/logs /app/checkpoints
+
+# Descargar e instalar Kafka
+RUN wget -O /tmp/kafka.tgz https://archive.apache.org/dist/kafka/3.5.1/kafka_2.13-3.5.1.tgz \
+    && tar -xzf /tmp/kafka.tgz -C /opt/kafka --strip-components=1 \
+    && rm /tmp/kafka.tgz
+
+# Descargar e instalar Spark
+RUN wget -O /tmp/spark.tgz https://archive.apache.org/dist/spark/spark-3.3.4/spark-3.3.4-bin-hadoop3.tgz \
+    && tar -xzf /tmp/spark.tgz -C /opt/spark --strip-components=1 \
+    && rm /tmp/spark.tgz
+
+# Descargar JARs necesarios para Kafka-Spark integration
+RUN wget -O $SPARK_HOME/jars/kafka-clients-3.5.1.jar \
+    https://repo1.maven.org/maven2/org/apache/kafka/kafka-clients/3.5.1/kafka-clients-3.5.1.jar
+
+RUN wget -O $SPARK_HOME/jars/spark-sql-kafka-0-10_2.12-3.3.4.jar \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-sql-kafka-0-10_2.12/3.3.4/spark-sql-kafka-0-10_2.12-3.3.4.jar
+
+RUN wget -O $SPARK_HOME/jars/commons-pool2-2.11.1.jar \
+    https://repo1.maven.org/maven2/org/apache/commons/commons-pool2/2.11.1/commons-pool2-2.11.1.jar
+
+# Descargar JARs adicionales requeridos para Kafka integration
+RUN wget -O $SPARK_HOME/jars/spark-token-provider-kafka-0-10_2.12-3.3.4.jar \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-token-provider-kafka-0-10_2.12/3.3.4/spark-token-provider-kafka-0-10_2.12-3.3.4.jar
+
+RUN wget -O $SPARK_HOME/jars/spark-streaming-kafka-0-10-assembly_2.12-3.3.4.jar \
+    https://repo1.maven.org/maven2/org/apache/spark/spark-streaming-kafka-0-10-assembly_2.12/3.3.4/spark-streaming-kafka-0-10-assembly_2.12-3.3.4.jar
+
+# Instalar dependencias Python
+COPY requirements.txt /tmp/
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# Copiar código fuente
+COPY src/ /app/
+COPY docker_scripts/ /app/scripts/
+
+# Configurar Kafka (KRaft mode)
+RUN echo "node.id=1" > $KAFKA_HOME/config/kraft/server.properties && \
+    echo "process.roles=broker,controller" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "controller.quorum.voters=1@localhost:9093" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "listeners=PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "advertised.listeners=PLAINTEXT://localhost:9092" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "controller.listener.names=CONTROLLER" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "num.network.threads=3" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "num.io.threads=8" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "socket.send.buffer.bytes=102400" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "socket.receive.buffer.bytes=102400" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "socket.request.max.bytes=104857600" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "log.dirs=/tmp/kraft-combined-logs" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "offsets.topic.replication.factor=1" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "transaction.state.log.replication.factor=1" >> $KAFKA_HOME/config/kraft/server.properties && \
+    echo "transaction.state.log.min.isr=1" >> $KAFKA_HOME/config/kraft/server.properties
+
+# Script de inicio
+COPY docker_scripts/start_all_services.sh /start_all_services.sh
+RUN chmod +x /start_all_services.sh
+
+# Exponer puertos
+EXPOSE 9092 9093 8080 7077 4040
+
+# Directorio de trabajo
+WORKDIR /app
+
+# Comando de inicio
+CMD ["/start_all_services.sh"]

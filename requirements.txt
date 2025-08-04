@@ -1,0 +1,5 @@
+faker==18.13.0
+kafka-python==2.0.2
+jsonschema==4.19.0
+pyspark==3.3.4
+py4j==0.10.9.5
