@@ -86,7 +86,7 @@ spark-submit \
   --conf spark.serializer=org.apache.spark.serializer.KryoSerializer \
   --driver-memory 2g \
   --executor-memory 2g \
-  spark_crime_processor_advanced.py &
+  spark_crime_processor_hdfs.py &
 SPARK_APP_PID=$!
 
 log "Todos los servicios iniciados exitosamente!"
