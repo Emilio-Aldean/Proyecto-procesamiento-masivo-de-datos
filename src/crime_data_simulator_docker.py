@@ -161,25 +161,35 @@ def generate_timestamp() -> str:
 def generate_crime_details(crime_type: str) -> str:
     """Genera detalles adicionales basados en el tipo de delito"""
     details_templates = {
-        "Robo a personas": [
-            "Sustracción de celular y billetera en la vía pública",
-            "Robo de pertenencias personales mediante intimidación",
-            "Hurto de objetos de valor en transporte público"
+        "robo": [
+            "Sustracción de pertenencias personales mediante intimidación",
+            "Hurto de objetos de valor en la vía pública",
+            "Robo de celular y billetera en transporte público"
         ],
-        "Robo de vehículos": [
-            "Sustracción de vehículo mediante amenazas",
-            "Robo de motocicleta en estacionamiento",
-            "Hurto de autopartes y accesorios"
+        "extorsión": [
+            "Amenazas para obtener dinero mediante chantaje",
+            "Cobro de cupos a comerciantes locales",
+            "Intimidación para extorsión telefónica"
         ],
-        "Asalto": [
-            "Agresión física durante intento de robo",
-            "Ataque con arma blanca en la vía pública",
-            "Intimidación y amenazas a transeúntes"
+        "sicariato": [
+            "Atentado con arma de fuego por encargo",
+            "Asesinato selectivo en vía pública",
+            "Ejecución planificada por terceros"
         ],
-        "Vandalismo": [
-            "Daños a propiedad pública mediante grafitis",
-            "Destrucción de mobiliario urbano",
-            "Rayado de vehículos estacionados"
+        "asesinato": [
+            "Homicidio con arma blanca en riña",
+            "Muerte violenta durante asalto",
+            "Asesinato por venganza personal"
+        ],
+        "secuestro": [
+            "Privación ilegal de libertad por rescate",
+            "Retención forzada de persona",
+            "Secuestro express para extorsión"
+        ],
+        "estafa": [
+            "Fraude mediante engaño telefónico",
+            "Estafa con tarjetas de crédito clonadas",
+            "Engaño para obtener dinero fraudulentamente"
         ]
     }
     
