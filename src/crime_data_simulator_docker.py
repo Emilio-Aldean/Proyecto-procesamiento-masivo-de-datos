@@ -40,12 +40,10 @@ CONFIG = {
     "batch_size": 25,  # Denuncias por lote
     "batch_interval": 3,  # Segundos entre lotes
     "crime_types": [
-        "Robo a personas", "Robo de vehículos", "Robo a domicilios", 
-        "Asalto", "Vandalismo", "Daños a propiedad", "Tráfico de drogas", 
-        "Violencia doméstica", "Estafa", "Extorsión"
+        "robo", "extorsión", "sicariato", "asesinato", "secuestro", "estafa"
     ],
-    # Probabilidades para cada tipo de delito
-    "crime_probabilities": [0.25, 0.15, 0.15, 0.12, 0.08, 0.08, 0.07, 0.05, 0.03, 0.02]
+    # Probabilidades para cada tipo de delito (6 tipos según especificación)
+    "crime_probabilities": [0.35, 0.25, 0.15, 0.10, 0.10, 0.05]
 }
 
 # Zonas geográficas de Guayaquil y Samborondón
