@@ -1,4 +1,5 @@
 #!/bin/bash
+# Script corregido con terminaciones de línea Unix (LF) para compatibilidad con Docker
 
 echo "=== INICIANDO TODOS LOS SERVICIOS EN CONTENEDOR ÚNICO ==="
 
