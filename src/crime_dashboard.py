@@ -25,10 +25,9 @@ import sys
 MAP_CENTER = [-2.15, -79.88]  # Centro entre Guayaquil y Samborondón
 ZOOM_LEVEL = 11
 
-# CORRECCIÓN GPT-5: Configuración de contenedores y modo offline
+# CORRECCIÓN GPT-5: Configuración de contenedores
 HDFS_CONTAINER = os.getenv("HDFS_CONTAINER", "namenode")
 OPEN_BROWSER = os.getenv("OPEN_BROWSER", "1") != "0"
-OFFLINE_MODE = os.getenv("OFFLINE_MODE", "0") == "1"
 
 # Crear app Flask
 app = Flask(__name__)
@@ -49,21 +48,17 @@ def check_hdfs_connection():
 
 def poll_hdfs_loop(interval=6):
     """Poller en background que actualiza cache cada 6 segundos"""
-    if OFFLINE_MODE:
-        print("[INFO] Modo OFFLINE activado - solo datos fallback")
-        hdfs_available = False
-    else:
-        hdfs_available = check_hdfs_connection()
-        if not hdfs_available:
-            print("[WARNING] HDFS no disponible - usando solo datos fallback")
+    hdfs_available = check_hdfs_connection()
+    if not hdfs_available:
+        print("[WARNING] HDFS no disponible - usando datos fallback")
     
     while True:
         try:
-            if hdfs_available and not OFFLINE_MODE:
+            if hdfs_available:
                 print("[POLLER] Actualizando cache desde HDFS...")
                 crimes = read_latest_crimes_from_hdfs()
             else:
-                print("[POLLER] Usando datos fallback...")
+                print("[POLLER] HDFS no disponible - usando fallback...")
                 crimes = generate_fallback_crimes()
                 
             with LATEST_LOCK:
@@ -71,10 +66,9 @@ def poll_hdfs_loop(interval=6):
                 LATEST_CRIMES.extend(crimes)
             print(f"[POLLER] Cache actualizado: {len(crimes)} crímenes")
         except Exception as e:
-            print(f"[ERROR] Polling: {e}")
-            # Revalidar conexión solo si no estamos en modo offline
-            if not OFFLINE_MODE:
-                hdfs_available = check_hdfs_connection()
+            print(f"[ERROR] Polling HDFS: {e}")
+            # Revalidar conexión en caso de error
+            hdfs_available = check_hdfs_connection()
         time.sleep(interval)
 
 # Template HTML para el mapa
@@ -643,11 +637,7 @@ if __name__ == "__main__":
     print("URL: http://localhost:5000")
     print("Actualizacion: cada 6 segundos")
     print("Duracion por punto: 1 minuto")
-    
-    if OFFLINE_MODE:
-        print("[INFO] MODO OFFLINE - Solo datos de demostración")
-    else:
-        print(f"[INFO] Contenedor HDFS: {HDFS_CONTAINER}")
+    print(f"[INFO] Contenedor HDFS: {HDFS_CONTAINER}")
     
     # CORRECCIÓN GPT-5: Iniciar poller en background
     print("[INIT] Iniciando poller en background...")
