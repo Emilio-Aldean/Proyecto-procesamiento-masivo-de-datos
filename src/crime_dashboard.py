@@ -18,13 +18,64 @@ import io
 import tempfile
 import os
 import webbrowser
+import signal
+import sys
 
 # Configuración del mapa
 MAP_CENTER = [-2.15, -79.88]  # Centro entre Guayaquil y Samborondón
 ZOOM_LEVEL = 11
 
+# CORRECCIÓN GPT-5: Configuración de contenedores y modo offline
+HDFS_CONTAINER = os.getenv("HDFS_CONTAINER", "namenode")
+OPEN_BROWSER = os.getenv("OPEN_BROWSER", "1") != "0"
+OFFLINE_MODE = os.getenv("OFFLINE_MODE", "0") == "1"
+
 # Crear app Flask
 app = Flask(__name__)
+
+# CORRECCIÓN GPT-5: Sistema de cache en background
+LATEST_CRIMES = []
+LATEST_LOCK = threading.Lock()
+
+def check_hdfs_connection():
+    """Valida conexión a HDFS antes de iniciar"""
+    try:
+        cmd = ["docker", "exec", HDFS_CONTAINER, "hdfs", "dfs", "-ls", "/"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        return result.returncode == 0
+    except Exception as e:
+        print(f"[WARNING] No se puede conectar a HDFS: {e}")
+        return False
+
+def poll_hdfs_loop(interval=6):
+    """Poller en background que actualiza cache cada 6 segundos"""
+    if OFFLINE_MODE:
+        print("[INFO] Modo OFFLINE activado - solo datos fallback")
+        hdfs_available = False
+    else:
+        hdfs_available = check_hdfs_connection()
+        if not hdfs_available:
+            print("[WARNING] HDFS no disponible - usando solo datos fallback")
+    
+    while True:
+        try:
+            if hdfs_available and not OFFLINE_MODE:
+                print("[POLLER] Actualizando cache desde HDFS...")
+                crimes = read_latest_crimes_from_hdfs()
+            else:
+                print("[POLLER] Usando datos fallback...")
+                crimes = generate_fallback_crimes()
+                
+            with LATEST_LOCK:
+                LATEST_CRIMES.clear()
+                LATEST_CRIMES.extend(crimes)
+            print(f"[POLLER] Cache actualizado: {len(crimes)} crímenes")
+        except Exception as e:
+            print(f"[ERROR] Polling: {e}")
+            # Revalidar conexión solo si no estamos en modo offline
+            if not OFFLINE_MODE:
+                hdfs_available = check_hdfs_connection()
+        time.sleep(interval)
 
 # Template HTML para el mapa
 HTML_TEMPLATE = """
@@ -268,7 +319,7 @@ def read_hdfs_directory(hdfs_path):
         print(f"[INFO] Listando archivos en {hdfs_path}")
         
         # Listar archivos en el directorio HDFS
-        cmd_list = ['docker', 'exec', 'namenode', 'hdfs', 'dfs', '-ls', hdfs_path]
+        cmd_list = ['docker', 'exec', HDFS_CONTAINER, 'hdfs', 'dfs', '-ls', hdfs_path]
         result = subprocess.run(cmd_list, capture_output=True, text=True, timeout=30)
         
         if result.returncode != 0:
@@ -320,68 +371,98 @@ def read_parquet_from_hdfs(hdfs_file_path):
         unique_id = str(uuid.uuid4())[:8]
         container_temp_path = f'/tmp/hdfs_temp_{unique_id}.parquet'
         
-        # Limpiar cualquier archivo temporal previo
-        cmd_clean = ['docker', 'exec', 'namenode', 'rm', '-f', container_temp_path]
-        subprocess.run(cmd_clean, capture_output=True, text=True, timeout=10)
-        
-        # Descargar archivo desde HDFS al contenedor con nombre único
-        cmd_get = ['docker', 'exec', 'namenode', 'hdfs', 'dfs', '-get', hdfs_file_path, container_temp_path]
+        # Descargar archivo desde HDFS al contenedor
+        cmd_get = ['docker', 'exec', HDFS_CONTAINER, 'hdfs', 'dfs', '-get', hdfs_file_path, container_temp_path]
         result_get = subprocess.run(cmd_get, capture_output=True, text=True, timeout=30)
         
         if result_get.returncode != 0:
             print(f"[ERROR] No se pudo descargar {hdfs_file_path}: {result_get.stderr}")
             return []
         
-        # Copiar archivo desde el contenedor al sistema local
-        cmd_copy = ['docker', 'cp', f'namenode:{container_temp_path}', temp_path]
+        # Copiar archivo del contenedor al sistema local
+        cmd_copy = ['docker', 'cp', f'{HDFS_CONTAINER}:{container_temp_path}', temp_path]
         result_copy = subprocess.run(cmd_copy, capture_output=True, text=True, timeout=30)
         
         if result_copy.returncode != 0:
             print(f"[ERROR] No se pudo copiar archivo: {result_copy.stderr}")
             return []
         
-        # Leer archivo Parquet con pandas
+        # Leer archivo Parquet con pandas - ROBUSTO
         if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-            df = pd.read_parquet(temp_path)
-            print(f"[INFO] Archivo Parquet leído: {len(df)} registros")
-            print(f"[DEBUG] Columnas disponibles: {list(df.columns)}")
-            if len(df) > 0:
-                print(f"[DEBUG] Primera fila: {dict(df.iloc[0])}")
+            try:
+                # GPT-5: Leer solo columnas necesarias para rendimiento
+                required_cols = ["timestamp", "crime_type", "district", "lat", "lon", "description", "crime_data"]
+                available_cols = None
+                
+                # Primero detectar columnas disponibles
+                df_sample = pd.read_parquet(temp_path, nrows=1)
+                available_cols = [col for col in required_cols if col in df_sample.columns]
+                
+                if available_cols:
+                    df = pd.read_parquet(temp_path, columns=available_cols)
+                else:
+                    df = pd.read_parquet(temp_path)  # Leer todo si no hay columnas específicas
+                    
+                print(f"[INFO] Archivo Parquet leído: {len(df)} registros")
+                print(f"[DEBUG] Columnas disponibles: {list(df.columns)}")
+                if len(df) > 0:
+                    print(f"[DEBUG] Primera fila: {dict(df.iloc[0])}")
+            except Exception as e:
+                print(f"[ERROR] Error leyendo Parquet: {e}")
+                return []
             
             # Convertir DataFrame a formato del dashboard - ADAPTABLE
             crimes = []
             for _, row in df.iterrows():
                 try:
-                    # CORRECCIÓN GPT-5: Manejar ambos formatos de datos
+                    # CORRECCIÓN GPT-5: Parsing robusto con try/except individual
                     if 'crime_data' in df.columns and pd.notna(row['crime_data']):
-                        # Formato con JSON anidado
-                        crime_json = json.loads(row['crime_data'])
-                        location = crime_json['location']
-                        coords = location['coordinates']
-                        
-                        lat_val = float(coords.get('lat', -2.1894))
-                        lon_val = float(coords.get('lon', -79.889))
+                        # Formato con JSON anidado - manejo robusto de tipos
+                        try:
+                            raw = row['crime_data']
+                            if isinstance(raw, dict):
+                                crime_json = raw
+                            elif isinstance(raw, (bytes, bytearray)):
+                                crime_json = json.loads(raw.decode('utf-8'))
+                            else:
+                                crime_json = json.loads(str(raw))
+                                
+                            location = crime_json.get('location', {})
+                            coords = location.get('coordinates', {})
+                            lat_val = float(coords.get('lat', coords.get('latitude', -2.1894)))
+                            lon_val = float(coords.get('lon', coords.get('longitude', -79.889)))
+                            timestamp = crime_json.get('timestamp', '') or row.get('timestamp', '')
+                            crime_type = crime_json.get('crime_type', 'desconocido')
+                            district = location.get('district', row.get('district', 'Centro'))
+                            description = crime_json.get('description', f"{crime_type} en {district} [HDFS-REAL]")
+                        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+                            print(f"[WARNING] Error parsing JSON en crime_data: {e}")
+                            continue
                         
                         crime_data = {
-                            'timestamp': crime_json.get('timestamp', ''),
-                            'crime_type': crime_json.get('crime_type', 'desconocido'),
-                            'district': location.get('district', 'Centro'),
+                            'timestamp': timestamp,
+                            'crime_type': crime_type,
+                            'district': district,
                             'lat': lat_val,
                             'lon': lon_val,
-                            'description': f"{crime_json.get('crime_type', 'crimen')} en {location.get('district', 'Centro')} [HDFS-REAL]"
+                            'description': description
                         }
                     else:
                         # Formato con columnas separadas
                         lat_val = float(row.get('lat', row.get('latitude', -2.1894)))
                         lon_val = float(row.get('lon', row.get('longitude', -79.889)))
+                        timestamp = row.get('timestamp', '')
+                        crime_type = row.get('crime_type', 'desconocido')
+                        district = row.get('district', 'Centro')
+                        description = row.get('description', f"{crime_type} en {district} [HDFS-REAL]")
                         
                         crime_data = {
-                            'timestamp': row.get('timestamp', ''),
-                            'crime_type': row.get('crime_type', 'desconocido'),
-                            'district': row.get('district', 'Centro'),
+                            'timestamp': timestamp,
+                            'crime_type': crime_type,
+                            'district': district,
                             'lat': lat_val,
                             'lon': lon_val,
-                            'description': f"{row.get('crime_type', 'crimen')} en {row.get('district', 'Centro')} [HDFS-REAL]"
+                            'description': description
                         }
                     print(f"[DEBUG] Coordenadas parseadas: lat={lat_val} ({type(lat_val)}), lon={lon_val} ({type(lon_val)})")
                     crimes.append(crime_data)
@@ -498,17 +579,18 @@ def index():
 
 @app.route("/api/crimes/realtime")
 def crimes_realtime():
-    """API endpoint que devuelve crímenes en formato GeoJSON"""
+    """API endpoint que devuelve crímenes en formato GeoJSON - RÁPIDO CON CACHE"""
     print(f"[API] ===== LLAMADA AL ENDPOINT /api/crimes/realtime =====")
     
-    # La función read_latest_crimes_from_hdfs ya filtra por tiempo
-    recent_crimes = read_latest_crimes_from_hdfs()
+    # CORRECCIÓN GPT-5: Usar cache con copy seguro para concurrencia
+    with LATEST_LOCK:
+        recent_crimes = [crime.copy() for crime in LATEST_CRIMES]
 
-    print(f"[API] Crímenes recientes recibidos: {len(recent_crimes)}")
+    print(f"[API] Crímenes desde cache: {len(recent_crimes)}")
     if recent_crimes:
         print(f"[API] Primer crimen: {recent_crimes[0]}")
     else:
-        print(f"[API] NO HAY CRÍMENES - usando fallback")
+        print(f"[API] NO HAY CRÍMENES EN CACHE - usando fallback")
         recent_crimes = generate_fallback_crimes()
         print(f"[API] Fallback generó: {len(recent_crimes)} crímenes")
 
@@ -546,15 +628,42 @@ def open_browser():
     time.sleep(2)
     webbrowser.open("http://localhost:5000")
 
+def signal_handler(sig, frame):
+    """Manejo limpio de señales de interrupción"""
+    print("\n[INFO] Cerrando dashboard...")
+    sys.exit(0)
+
 if __name__ == "__main__":
+    # Configurar manejo de señales
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     print("Iniciando Dashboard Criminal...")
     print("Mapa: Guayaquil & Samborondon")
     print("URL: http://localhost:5000")
     print("Actualizacion: cada 6 segundos")
     print("Duracion por punto: 1 minuto")
     
-    # Abrir navegador en hilo separado
-    Thread(target=open_browser, daemon=True).start()
+    if OFFLINE_MODE:
+        print("[INFO] MODO OFFLINE - Solo datos de demostración")
+    else:
+        print(f"[INFO] Contenedor HDFS: {HDFS_CONTAINER}")
     
-    # Iniciar servidor Flask
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    # CORRECCIÓN GPT-5: Iniciar poller en background
+    print("[INIT] Iniciando poller en background...")
+    poller = Thread(target=poll_hdfs_loop, args=(6,), daemon=True)
+    poller.start()
+    
+    # Abrir navegador solo si está configurado
+    if OPEN_BROWSER:
+        Thread(target=open_browser, daemon=True).start()
+    
+    try:
+        # Iniciar servidor Flask
+        app.run(host="0.0.0.0", port=5000, debug=False)
+    except KeyboardInterrupt:
+        print("\n[INFO] Dashboard cerrado por usuario")
+    except Exception as e:
+        print(f"\n[ERROR] Error en servidor Flask: {e}")
+    finally:
+        print("[INFO] Limpieza completada")
