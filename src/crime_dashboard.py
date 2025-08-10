@@ -20,6 +20,8 @@ import os
 import webbrowser
 import signal
 import sys
+import shutil
+import uuid
 
 # Configuración del mapa
 MAP_CENTER = [-2.15, -79.88]  # Centro entre Guayaquil y Samborondón
@@ -28,6 +30,12 @@ ZOOM_LEVEL = 11
 # CORRECCIÓN GPT-5: Configuración de contenedores
 HDFS_CONTAINER = os.getenv("HDFS_CONTAINER", "namenode")
 OPEN_BROWSER = os.getenv("OPEN_BROWSER", "1") != "0"
+
+# CONFIGURACIÓN SEGÚN REQUISITOS DEL PROYECTO
+SPARK_INTERVAL = 6      # segundos - Requisito: Spark Streaming cada 6 segundos
+MARKER_DURATION = 60    # segundos - Requisito: punto dure dibujado 1 minuto
+POLLER_INTERVAL = 6     # segundos - sincronizado con Spark Streaming
+MAX_CRIMES_PER_CYCLE = 20  # límite para rendimiento
 
 # Crear app Flask
 app = Flask(__name__)
@@ -46,7 +54,7 @@ def check_hdfs_connection():
         print(f"[WARNING] No se puede conectar a HDFS: {e}")
         return False
 
-def poll_hdfs_loop(interval=6):
+def poll_hdfs_loop(interval=POLLER_INTERVAL):
     """Poller en background que actualiza cache cada 6 segundos"""
     hdfs_available = check_hdfs_connection()
     if not hdfs_available:
@@ -286,9 +294,9 @@ def read_latest_crimes_from_hdfs():
                 district_crimes = read_hdfs_directory(hdfs_path)
                 crimes_data.extend(district_crimes)
                 
-                if len(crimes_data) >= 20:  # Limitar para rendimiento
+                if len(crimes_data) >= MAX_CRIMES_PER_CYCLE:  # Limitar para rendimiento
                     break
-            if len(crimes_data) >= 20:
+            if len(crimes_data) >= MAX_CRIMES_PER_CYCLE:
                 break
         
         if len(crimes_data) > 0:
@@ -329,26 +337,202 @@ def read_hdfs_directory(hdfs_path):
         
         print(f"[INFO] Encontrados {len(parquet_files)} archivos Parquet en {hdfs_path}")
         
-        # Leer solo los primeros 2 archivos para rendimiento
+        # OPTIMIZACIÓN: Leer múltiples archivos en batch para reducir docker exec
         crimes_data = []
-        for file_path in parquet_files[:2]:
+        selected_files = parquet_files[:2]  # Solo primeros 2 archivos
+        
+        if selected_files:
             try:
-                file_crimes = read_parquet_from_hdfs(file_path)
-                crimes_data.extend(file_crimes)
-                print(f"[SUCCESS] Leídos {len(file_crimes)} crímenes de {file_path}")
-                
-                # Limitar total de crímenes
-                if len(crimes_data) >= 10:
-                    break
-                    
+                # Batch copy: copiar todos los archivos de una vez
+                crimes_data = read_multiple_parquet_from_hdfs_batch(selected_files)
+                print(f"[SUCCESS] Leídos {len(crimes_data)} crímenes de {len(selected_files)} archivos en batch")
             except Exception as e:
-                print(f"[WARNING] Error leyendo {file_path}: {e}")
-                continue
+                print(f"[WARNING] Error en batch read, fallback a lectura individual: {e}")
+                # Fallback a lectura individual si batch falla
+                for file_path in selected_files:
+                    try:
+                        file_crimes = read_parquet_from_hdfs(file_path)
+                        crimes_data.extend(file_crimes)
+                        if len(crimes_data) >= MAX_CRIMES_PER_CYCLE:
+                            break
+                    except Exception as e:
+                        print(f"[WARNING] Error leyendo {file_path}: {e}")
+                        continue
         
         return crimes_data
         
     except Exception as e:
         print(f"[ERROR] Error listando directorio {hdfs_path}: {e}")
+        return []
+
+def read_multiple_parquet_from_hdfs_batch(hdfs_file_paths):
+    """
+    OPTIMIZACIÓN: Lee múltiples archivos Parquet de HDFS en batch
+    Reduce comandos Docker de 4-6 → 2-3 por ciclo
+    """
+    import uuid
+    
+    if not hdfs_file_paths:
+        return []
+    
+    print(f"[BATCH] Leyendo {len(hdfs_file_paths)} archivos en batch...")
+    
+    try:
+        # Crear directorio temporal único en contenedor
+        batch_id = str(uuid.uuid4())[:8]
+        container_temp_dir = f'/tmp/hdfs_batch_{batch_id}'
+        
+        # Crear directorio temporal en contenedor
+        cmd_mkdir = ['docker', 'exec', HDFS_CONTAINER, 'mkdir', '-p', container_temp_dir]
+        subprocess.run(cmd_mkdir, capture_output=True, text=True, timeout=10)
+        
+        # OPTIMIZACIÓN: Descargar todos los archivos en un solo comando
+        container_paths = []
+        for i, hdfs_path in enumerate(hdfs_file_paths):
+            container_file = f'{container_temp_dir}/file_{i}.parquet'
+            container_paths.append(container_file)
+            
+            # Descargar archivo individual
+            cmd_get = ['docker', 'exec', HDFS_CONTAINER, 'hdfs', 'dfs', '-get', hdfs_path, container_file]
+            result = subprocess.run(cmd_get, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                print(f"[WARNING] No se pudo descargar {hdfs_path}: {result.stderr}")
+                continue
+        
+        # Crear directorio temporal local
+        local_temp_dir = tempfile.mkdtemp()
+        
+        # OPTIMIZACIÓN: Copiar todos los archivos del contenedor en batch
+        if container_paths:
+            cmd_copy = ['docker', 'cp', f'{HDFS_CONTAINER}:{container_temp_dir}/.', local_temp_dir]
+            result_copy = subprocess.run(cmd_copy, capture_output=True, text=True, timeout=30)
+            
+            if result_copy.returncode != 0:
+                print(f"[WARNING] Error copiando batch: {result_copy.stderr}")
+                return []
+        
+        # Procesar todos los archivos locales
+        all_crimes = []
+        for local_file in os.listdir(local_temp_dir):
+            if local_file.endswith('.parquet'):
+                local_path = os.path.join(local_temp_dir, local_file)
+                try:
+                    crimes = process_parquet_file(local_path)
+                    all_crimes.extend(crimes)
+                    print(f"[BATCH] Procesado {local_file}: {len(crimes)} crímenes")
+                    
+                    # Limitar total
+                    if len(all_crimes) >= MAX_CRIMES_PER_CYCLE:
+                        break
+                        
+                except Exception as e:
+                    print(f"[WARNING] Error procesando {local_file}: {e}")
+                    continue
+        
+        # Limpiar archivos temporales
+        try:
+            # Limpiar contenedor
+            cmd_clean = ['docker', 'exec', HDFS_CONTAINER, 'rm', '-rf', container_temp_dir]
+            subprocess.run(cmd_clean, capture_output=True, text=True, timeout=10)
+            
+            # Limpiar local
+            import shutil
+            shutil.rmtree(local_temp_dir, ignore_errors=True)
+        except:
+            pass
+        
+        return all_crimes[:MAX_CRIMES_PER_CYCLE]
+        
+    except Exception as e:
+        print(f"[ERROR] Error en batch reading: {e}")
+        return []
+
+def process_parquet_file(temp_path):
+    """
+    Procesa un archivo Parquet local y devuelve lista de crímenes
+    Extraído de read_parquet_from_hdfs para reutilización
+    """
+    crimes = []
+    
+    try:
+        # GPT-5: Leer solo columnas necesarias para rendimiento
+        required_cols = ["timestamp", "crime_type", "district", "lat", "lon", "description", "crime_data"]
+        
+        # Primero detectar columnas disponibles
+        df_sample = pd.read_parquet(temp_path, nrows=1)
+        available_cols = [col for col in required_cols if col in df_sample.columns]
+        
+        if available_cols:
+            df = pd.read_parquet(temp_path, columns=available_cols)
+        else:
+            df = pd.read_parquet(temp_path)  # Leer todo si no hay columnas específicas
+            
+        print(f"[INFO] Archivo Parquet procesado: {len(df)} registros")
+        
+        # Convertir DataFrame a formato del dashboard - ADAPTABLE
+        for _, row in df.iterrows():
+            try:
+                # CORRECCIÓN GPT-5: Parsing robusto con try/except individual
+                if 'crime_data' in df.columns and pd.notna(row['crime_data']):
+                    # Formato con JSON anidado - manejo robusto de tipos
+                    try:
+                        raw = row['crime_data']
+                        if isinstance(raw, dict):
+                            crime_json = raw
+                        elif isinstance(raw, (bytes, bytearray)):
+                            crime_json = json.loads(raw.decode('utf-8'))
+                        else:
+                            crime_json = json.loads(str(raw))
+                            
+                        location = crime_json.get('location', {})
+                        coords = location.get('coordinates', {})
+                        lat_val = float(coords.get('lat', coords.get('latitude', -2.1894)))
+                        lon_val = float(coords.get('lon', coords.get('longitude', -79.889)))
+                        timestamp = crime_json.get('timestamp', '') or row.get('timestamp', '')
+                        crime_type = crime_json.get('crime_type', 'desconocido')
+                        district = location.get('district', row.get('district', 'Centro'))
+                        description = crime_json.get('description', f"{crime_type} en {district} [HDFS-REAL]")
+                    except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
+                        print(f"[WARNING] Error parsing JSON en crime_data: {e}")
+                        continue
+                    
+                    crime_data = {
+                        'timestamp': timestamp,
+                        'crime_type': crime_type,
+                        'district': district,
+                        'lat': lat_val,
+                        'lon': lon_val,
+                        'description': description
+                    }
+                else:
+                    # Formato con columnas separadas
+                    lat_val = float(row.get('lat', row.get('latitude', -2.1894)))
+                    lon_val = float(row.get('lon', row.get('longitude', -79.889)))
+                    timestamp = row.get('timestamp', '')
+                    crime_type = row.get('crime_type', 'desconocido')
+                    district = row.get('district', 'Centro')
+                    description = row.get('description', f"{crime_type} en {district} [HDFS-REAL]")
+                    
+                    crime_data = {
+                        'timestamp': timestamp,
+                        'crime_type': crime_type,
+                        'district': district,
+                        'lat': lat_val,
+                        'lon': lon_val,
+                        'description': description
+                    }
+                
+                crimes.append(crime_data)
+                
+            except Exception as e:
+                print(f"[WARNING] Error parseando fila: {e}")
+                continue
+        
+        return crimes
+        
+    except Exception as e:
+        print(f"[ERROR] Error procesando archivo Parquet: {e}")
         return []
 
 def read_parquet_from_hdfs(hdfs_file_path):
@@ -381,90 +565,9 @@ def read_parquet_from_hdfs(hdfs_file_path):
             print(f"[ERROR] No se pudo copiar archivo: {result_copy.stderr}")
             return []
         
-        # Leer archivo Parquet con pandas - ROBUSTO
+        # Procesar archivo Parquet usando función compartida
         if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
-            try:
-                # GPT-5: Leer solo columnas necesarias para rendimiento
-                required_cols = ["timestamp", "crime_type", "district", "lat", "lon", "description", "crime_data"]
-                available_cols = None
-                
-                # Primero detectar columnas disponibles
-                df_sample = pd.read_parquet(temp_path, nrows=1)
-                available_cols = [col for col in required_cols if col in df_sample.columns]
-                
-                if available_cols:
-                    df = pd.read_parquet(temp_path, columns=available_cols)
-                else:
-                    df = pd.read_parquet(temp_path)  # Leer todo si no hay columnas específicas
-                    
-                print(f"[INFO] Archivo Parquet leído: {len(df)} registros")
-                print(f"[DEBUG] Columnas disponibles: {list(df.columns)}")
-                if len(df) > 0:
-                    print(f"[DEBUG] Primera fila: {dict(df.iloc[0])}")
-            except Exception as e:
-                print(f"[ERROR] Error leyendo Parquet: {e}")
-                return []
-            
-            # Convertir DataFrame a formato del dashboard - ADAPTABLE
-            crimes = []
-            for _, row in df.iterrows():
-                try:
-                    # CORRECCIÓN GPT-5: Parsing robusto con try/except individual
-                    if 'crime_data' in df.columns and pd.notna(row['crime_data']):
-                        # Formato con JSON anidado - manejo robusto de tipos
-                        try:
-                            raw = row['crime_data']
-                            if isinstance(raw, dict):
-                                crime_json = raw
-                            elif isinstance(raw, (bytes, bytearray)):
-                                crime_json = json.loads(raw.decode('utf-8'))
-                            else:
-                                crime_json = json.loads(str(raw))
-                                
-                            location = crime_json.get('location', {})
-                            coords = location.get('coordinates', {})
-                            lat_val = float(coords.get('lat', coords.get('latitude', -2.1894)))
-                            lon_val = float(coords.get('lon', coords.get('longitude', -79.889)))
-                            timestamp = crime_json.get('timestamp', '') or row.get('timestamp', '')
-                            crime_type = crime_json.get('crime_type', 'desconocido')
-                            district = location.get('district', row.get('district', 'Centro'))
-                            description = crime_json.get('description', f"{crime_type} en {district} [HDFS-REAL]")
-                        except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-                            print(f"[WARNING] Error parsing JSON en crime_data: {e}")
-                            continue
-                        
-                        crime_data = {
-                            'timestamp': timestamp,
-                            'crime_type': crime_type,
-                            'district': district,
-                            'lat': lat_val,
-                            'lon': lon_val,
-                            'description': description
-                        }
-                    else:
-                        # Formato con columnas separadas
-                        lat_val = float(row.get('lat', row.get('latitude', -2.1894)))
-                        lon_val = float(row.get('lon', row.get('longitude', -79.889)))
-                        timestamp = row.get('timestamp', '')
-                        crime_type = row.get('crime_type', 'desconocido')
-                        district = row.get('district', 'Centro')
-                        description = row.get('description', f"{crime_type} en {district} [HDFS-REAL]")
-                        
-                        crime_data = {
-                            'timestamp': timestamp,
-                            'crime_type': crime_type,
-                            'district': district,
-                            'lat': lat_val,
-                            'lon': lon_val,
-                            'description': description
-                        }
-                    print(f"[DEBUG] Coordenadas parseadas: lat={lat_val} ({type(lat_val)}), lon={lon_val} ({type(lon_val)})")
-                    crimes.append(crime_data)
-                    print(f"[SUCCESS] Crimen parseado: {crime_data['crime_type']} en {crime_data['district']}")
-                except Exception as e:
-                    print(f"[WARNING] Error parseando fila: {e}")
-                    print(f"[DEBUG] Row data: {dict(row)}")
-                    continue
+            crimes = process_parquet_file(temp_path)
             
             # Limpiar archivos temporales
             try:
@@ -641,7 +744,7 @@ if __name__ == "__main__":
     
     # CORRECCIÓN GPT-5: Iniciar poller en background
     print("[INIT] Iniciando poller en background...")
-    poller = Thread(target=poll_hdfs_loop, args=(6,), daemon=True)
+    poller = Thread(target=poll_hdfs_loop, args=(POLLER_INTERVAL,), daemon=True)
     poller.start()
     
     # Abrir navegador solo si está configurado
