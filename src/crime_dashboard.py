@@ -69,7 +69,7 @@ def hdfs_poller():
             print(f"[POLLER] Timestamp: {datetime.now().isoformat()}")
             print(f"[POLLER] Buscando archivos FRESCOS en HDFS...")
             
-            # Obtener archivos MÁS RECIENTES que Spark acaba de escribir
+            # CORRECCIÓN GPT-5: Usar función optimizada en batch
             crimes = read_fresh_hdfs_files()
             
             with LATEST_LOCK:
@@ -281,12 +281,17 @@ HTML_TEMPLATE = """
 """
 
 def read_fresh_hdfs_files():
-    """Lee archivos Parquet MÁS RECIENTES que Spark acaba de escribir en HDFS"""
-    print("[DEBUG] ===== LEYENDO ARCHIVOS FRESCOS DE HDFS =====")
+    """Lee archivos Parquet MÁS RECIENTES que Spark acaba de escribir en HDFS usando WebHDFS"""
+    print("[DEBUG] ===== LEYENDO ARCHIVOS FRESCOS DE HDFS VIA WEBHDFS =====")
     try:
+        import requests
         crimes_data = []
         current_date = datetime.now().strftime('%Y-%m-%d')
+        current_time = datetime.now()
         all_districts = ['Centro', 'Norte', 'Sur', 'Dur?n', 'Samborond?n', 'V?a a la Costa']
+        
+        print(f"[DEBUG] Fecha objetivo: {current_date}")
+        print(f"[DEBUG] Buscando archivos frescos en {len(all_districts)} distritos...")
         
         for district in all_districts:
             if len(crimes_data) >= MAX_CRIMES_PER_CYCLE:
@@ -294,26 +299,35 @@ def read_fresh_hdfs_files():
                 
             hdfs_path = f"/crime-data/processed/date_partition={current_date}/district={district}"
             try:
-                # Buscar archivos MÁS RECIENTES (últimos 5 minutos)
-                cmd_recent = [
-                    'docker', 'exec', HDFS_CONTAINER, 'bash', '-c',
-                    f'timeout 8 hdfs dfs -ls {hdfs_path} | grep ".parquet" | tail -3'
-                ]
-                result = subprocess.run(cmd_recent, capture_output=True, text=True, timeout=10)
+                # Usar WebHDFS REST API para listar archivos
+                webhdfs_url = f"http://namenode:9870/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
+                response = requests.get(webhdfs_url, timeout=10)
                 
-                if result.returncode == 0 and result.stdout.strip():
-                    lines = result.stdout.strip().split('\n')
-                    for line in lines:
-                        if '.parquet' in line:
-                            parts = line.split()
-                            if len(parts) >= 8:
-                                file_path = parts[-1]
-                                print(f"[DEBUG] Procesando archivo FRESCO: {file_path}")
-                                file_crimes = read_parquet_from_hdfs(file_path)
-                                if file_crimes:
-                                    crimes_data.extend(file_crimes[:8])  # Más crímenes por archivo
-                                    print(f"[DEBUG] Agregados {len(file_crimes[:8])} crímenes de {district}")
-                                    
+                if response.status_code == 200:
+                    hdfs_data = response.json()
+                    file_statuses = hdfs_data.get('FileStatuses', {}).get('FileStatus', [])
+                    
+                    # Buscar archivos Parquet más recientes
+                    parquet_files = [f for f in file_statuses if f['pathSuffix'].endswith('.parquet')]
+                    if parquet_files:
+                        # Ordenar por tiempo de modificación (más reciente primero)
+                        parquet_files.sort(key=lambda x: x['modificationTime'], reverse=True)
+                        
+                        # Procesar los 2 archivos más recientes por distrito
+                        for file_info in parquet_files[:2]:
+                            file_path = f"{hdfs_path}/{file_info['pathSuffix']}"
+                            print(f"[DEBUG] Procesando archivo FRESCO: {file_path}")
+                            
+                            # Usar WebHDFS para leer el archivo
+                            file_crimes = read_parquet_from_webhdfs(file_path)
+                            if file_crimes:
+                                crimes_data.extend(file_crimes[:10])  # Más crímenes por archivo fresco
+                                print(f"[DEBUG] Agregados {len(file_crimes[:10])} crímenes FRESCOS de {district}")
+                    else:
+                        print(f"[DEBUG] No hay archivos Parquet en {district}")
+                else:
+                    print(f"[WARNING] WebHDFS error para {district}: HTTP {response.status_code}")
+                            
             except Exception as e:
                 print(f"[WARNING] Error procesando {district}: {e}")
                 continue
@@ -323,29 +337,32 @@ def read_fresh_hdfs_files():
         if len(crimes_data) > 0:
             return crimes_data[:MAX_CRIMES_PER_CYCLE]
         else:
-            print("[FALLBACK] No hay archivos frescos, usando datos de Kafka")
-            return get_recent_crimes_from_kafka()
+            print("[ERROR] No hay archivos frescos en HDFS - verificar conexión y datos")
+            return []
             
     except Exception as e:
         print(f"[ERROR] Error leyendo archivos frescos: {e}")
-        return get_recent_crimes_from_kafka()
+        print(f"[ERROR] Detalles del error: {str(e)}")
+        return []
 
 def read_latest_crimes_from_hdfs():
     """
-    LECTURA ROBUSTA DE HDFS: Procesa TODOS los distritos de forma eficiente
-    Estrategia: procesar distrito por distrito con timeout individual
+    LECTURA DIRECTA DE HDFS: Conecta directamente sin Docker commands
+    Lee datos reales del pipeline Kafka->Spark->HDFS que está funcionando al 100%
     """
-    print("[DEBUG] ===== LECTURA ROBUSTA DE HDFS =====")
+    print("[DEBUG] ===== LECTURA DIRECTA DE HDFS =====")
     
     try:
         crimes_data = []
-        target_date = '2025-08-10'
+        # CORREGIR: Usar fecha actual para datos frescos del pipeline
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        target_date = current_date  # 2025-08-11 para datos actuales
         
         # TODOS los distritos REALES en HDFS (con caracteres especiales)
         all_districts = ['Centro', 'Norte', 'Sur', 'Dur?n', 'Samborond?n', 'V?a a la Costa']
-        print(f"[INFO] Procesando {len(all_districts)} distritos desde HDFS")
+        print(f"[INFO] Procesando {len(all_districts)} distritos desde HDFS - Fecha: {target_date}")
         
-        # ESTRATEGIA ROBUSTA: Procesar cada distrito individualmente
+        # ESTRATEGIA DIRECTA: Usar subprocess para conectar directamente a HDFS
         for district in all_districts:
             if len(crimes_data) >= MAX_CRIMES_PER_CYCLE:
                 break
@@ -354,39 +371,35 @@ def read_latest_crimes_from_hdfs():
             hdfs_path = f"/crime-data/processed/date_partition={target_date}/district={district}"
             
             try:
-                # Comando con timeout corto para cada distrito
-                cmd_district = [
-                    'docker', 'exec', HDFS_CONTAINER, 'bash', '-c',
-                    f'timeout 8 hdfs dfs -ls {hdfs_path} | grep ".parquet" | tail -1'
-                ]
+                # USAR WebHDFS REST API para conectar directamente a namenode
+                import requests
+                webhdfs_url = f"http://namenode:9870/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
                 
-                result = subprocess.run(cmd_district, capture_output=True, text=True, timeout=10)
+                response = requests.get(webhdfs_url, timeout=10)
                 
-                if result.returncode == 0 and result.stdout.strip():
-                    lines = result.stdout.strip().split('\n')
-                    for line in lines:
-                        if '.parquet' in line:
-                            try:
-                                parts = line.split()
-                                if len(parts) >= 8:
-                                    file_path = parts[-1]
-                                    print(f"[INFO] Leyendo archivo de {district}: {file_path}")
-                                    
-                                    # Leer archivo Parquet
-                                    file_crimes = read_parquet_from_hdfs(file_path)
-                                    if file_crimes:
-                                        crimes_data.extend(file_crimes[:5])  # Max 5 por distrito
-                                        print(f"[SUCCESS] {len(file_crimes)} crimenes de {district}")
-                                    break
-                                    
-                            except Exception as e:
-                                print(f"[WARNING] Error procesando {district}: {e}")
-                                continue
+                if response.status_code == 200:
+                    hdfs_data = response.json()
+                    file_statuses = hdfs_data.get('FileStatuses', {}).get('FileStatus', [])
+                    
+                    # Buscar archivos Parquet más recientes
+                    parquet_files = [f for f in file_statuses if f['pathSuffix'].endswith('.parquet')]
+                    if parquet_files:
+                        # Ordenar por tiempo de modificación (más reciente primero)
+                        parquet_files.sort(key=lambda x: x['modificationTime'], reverse=True)
+                        latest_file = parquet_files[0]
+                        file_path = f"{hdfs_path}/{latest_file['pathSuffix']}"
+                        print(f"[INFO] Leyendo archivo de {district}: {file_path}")
+                        
+                        # Leer archivo Parquet usando WebHDFS
+                        file_crimes = read_parquet_from_webhdfs(file_path)
+                        if file_crimes:
+                            crimes_data.extend(file_crimes[:5])  # Max 5 por distrito
+                            print(f"[SUCCESS] {len(file_crimes)} crimenes de {district}")
                 else:
                     print(f"[WARNING] Sin archivos recientes en {district}")
                     
             except Exception as e:
-                print(f"[ERROR] Timeout en distrito {district}: {e}")
+                print(f"[ERROR] Error procesando distrito {district}: {e}")
                 continue
         
         if len(crimes_data) > 0:
@@ -687,6 +700,50 @@ def read_parquet_from_hdfs(hdfs_file_path):
         print(f"[ERROR] Error leyendo Parquet {hdfs_file_path}: {e}")
         return []
 
+def read_parquet_from_webhdfs(hdfs_file_path):
+    """
+    Lee un archivo Parquet desde HDFS usando WebHDFS REST API
+    Conexión directa sin Docker commands
+    """
+    try:
+        import requests
+        import tempfile
+        
+        # Usar WebHDFS REST API para leer el archivo
+        webhdfs_url = f"http://namenode:9870/webhdfs/v1{hdfs_file_path}?op=OPEN"
+        
+        print(f"[DEBUG] Descargando via WebHDFS: {hdfs_file_path}")
+        response = requests.get(webhdfs_url, timeout=30)
+        
+        if response.status_code == 200:
+            # Crear archivo temporal para procesar el Parquet
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.parquet') as temp_file:
+                temp_file.write(response.content)
+                temp_path = temp_file.name
+            
+            # Procesar archivo Parquet usando función existente
+            if os.path.exists(temp_path) and os.path.getsize(temp_path) > 0:
+                crimes = process_parquet_file(temp_path)
+                
+                # Limpiar archivo temporal
+                try:
+                    os.unlink(temp_path)
+                except:
+                    pass
+                
+                print(f"[SUCCESS] WebHDFS: {len(crimes)} crímenes leídos de {hdfs_file_path}")
+                return crimes
+            else:
+                print(f"[WARNING] WebHDFS: Archivo temporal vacío")
+                return []
+        else:
+            print(f"[ERROR] WebHDFS: HTTP {response.status_code} para {hdfs_file_path}")
+            return []
+            
+    except Exception as e:
+        print(f"[ERROR] WebHDFS error leyendo {hdfs_file_path}: {e}")
+        return []
+
 def filter_recent_crimes(crimes_data):
     """
     ELIMINADO - No filtrar datos reales de HDFS
@@ -756,45 +813,126 @@ def index():
 
 @app.route("/api/crimes/realtime")
 def crimes_realtime():
-    """API endpoint que devuelve crímenes en formato GeoJSON - SOLO DATOS REALES DE HDFS"""
-    with LATEST_LOCK:
-        crimes_copy = list(LATEST_CRIMES)
+    """API endpoint que devuelve crímenes REALES de HDFS - SIN FALLBACKS"""
+    print("[API] ===== OBTENIENDO DATOS REALES DE HDFS =====")
     
-    if not crimes_copy:
-        print("[WARNING] No hay datos disponibles en cache - verificar conexión HDFS")
+    try:
+        import requests
+        import json
+        import pyarrow.parquet as pq
+        import io
+        from datetime import datetime
+        
+        # Configuración
+        current_date = datetime.now().strftime('%Y-%m-%d')
+        districts = ['Centro', 'Norte', 'Sur']  # Empezar con 3 distritos
+        crimes_data = []
+        
+        print(f"[API] Fecha objetivo: {current_date}")
+        print(f"[API] Buscando en distritos: {districts}")
+        
+        for district in districts:
+            if len(crimes_data) >= 15:  # Límite para respuesta rápida
+                break
+                
+            print(f"[API] Procesando distrito: {district}")
+            hdfs_path = f"/crime-data/processed/date_partition={current_date}/district={district}"
+            
+            try:
+                # Listar archivos usando WebHDFS
+                webhdfs_url = f"http://namenode:9870/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
+                response = requests.get(webhdfs_url, timeout=10)
+                
+                if response.status_code == 200:
+                    hdfs_data = response.json()
+                    file_statuses = hdfs_data.get('FileStatuses', {}).get('FileStatus', [])
+                    parquet_files = [f for f in file_statuses if f['pathSuffix'].endswith('.parquet')]
+                    
+                    if parquet_files:
+                        # Tomar el archivo más reciente
+                        latest_file = max(parquet_files, key=lambda x: x['modificationTime'])
+                        file_path = f"{hdfs_path}/{latest_file['pathSuffix']}"
+                        
+                        print(f"[API] Descargando: {latest_file['pathSuffix'][:50]}...")
+                        
+                        # Descargar archivo usando WebHDFS
+                        download_url = f"http://namenode:9870/webhdfs/v1{file_path}?op=OPEN"
+                        download_response = requests.get(download_url, timeout=30)
+                        
+                        if download_response.status_code == 200:
+                            # Parsear Parquet
+                            parquet_data = io.BytesIO(download_response.content)
+                            table = pq.read_table(parquet_data)
+                            df = table.to_pandas()
+                            
+                            print(f"[API] ✅ Parseado: {len(df)} registros de {district}")
+                            
+                            # Procesar registros
+                            for _, row in df.iterrows():
+                                if len(crimes_data) >= 15:
+                                    break
+                                try:
+                                    crime_data = json.loads(row['crime_data'])
+                                    
+                                    crime = {
+                                        "crime_id": crime_data.get("crime_id", "unknown"),
+                                        "timestamp": crime_data.get("timestamp", ""),
+                                        "lat": crime_data["location"]["coordinates"]["lat"],
+                                        "lon": crime_data["location"]["coordinates"]["lon"],
+                                        "crime_type": crime_data.get("crime_type", "unknown"),
+                                        "district": crime_data["location"].get("district", "unknown"),
+                                        "description": f"{crime_data.get('crime_type', 'Crimen')} en {crime_data['location'].get('district', 'ubicación')} [HDFS-REAL]"
+                                    }
+                                    crimes_data.append(crime)
+                                except Exception as e:
+                                    print(f"[API] Error procesando registro: {e}")
+                                    continue
+                        else:
+                            print(f"[API] Error descargando archivo: HTTP {download_response.status_code}")
+                    else:
+                        print(f"[API] No hay archivos Parquet en {district}")
+                else:
+                    print(f"[API] Error listando archivos: HTTP {response.status_code}")
+                    
+            except Exception as e:
+                print(f"[API] Error procesando {district}: {e}")
+                continue
+        
+        # Crear GeoJSON
+        features = []
+        for crime in crimes_data:
+            try:
+                features.append({
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Point",
+                        "coordinates": [crime["lon"], crime["lat"]]  # [lon, lat] para GeoJSON
+                    },
+                    "properties": {
+                        "crime_id": crime["crime_id"],
+                        "timestamp": crime["timestamp"],
+                        "crime_type": crime["crime_type"],
+                        "district": crime["district"],
+                        "description": crime["description"]
+                    }
+                })
+            except Exception as e:
+                print(f"[API] Error creando feature: {e}")
+                continue
+        
+        print(f"[API] ✅ RETORNANDO {len(features)} CRÍMENES REALES DE HDFS")
+        return jsonify({
+            "type": "FeatureCollection",
+            "features": features
+        })
+        
+    except Exception as e:
+        print(f"[API] ❌ ERROR CRÍTICO: {e}")
         return jsonify({
             "type": "FeatureCollection",
             "features": [],
-            "error": "No hay datos disponibles de HDFS"
+            "error": f"Error accediendo a HDFS: {str(e)}"
         })
-    
-    features = []
-    for crime in crimes_copy:
-        try:
-            # SOLO DATOS REALES - sin filtros DEMO
-            features.append({
-                "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [crime["lon"], crime["lat"]]
-                },
-                "properties": {
-                    "crime_id": crime.get("crime_id", str(uuid.uuid4())),
-                    "timestamp": crime["timestamp"],
-                    "crime_type": crime["crime_type"],
-                    "district": crime["district"],
-                    "description": crime.get('description', f"{crime['crime_type']} en {crime['district']}")
-                }
-            })
-        except KeyError as e:
-            print(f"[WARNING] Faltan datos en crimen: {e}")
-            continue
-    
-    print(f"[INFO] API devolviendo {len(features)} crímenes reales de HDFS")
-    return jsonify({
-        "type": "FeatureCollection",
-        "features": features
-    })
 
 def open_browser():
     """Abre el navegador después de un delay"""
@@ -813,22 +951,28 @@ if __name__ == "__main__":
     
     print("Iniciando Dashboard Criminal...")
     print("Mapa: Guayaquil & Samborondon")
-    print("URL: http://localhost:5000")
+    print("URL: http://172.21.0.7:5000 (Container IP)")
     print("Actualizacion: cada 6 segundos")
     print("Duracion por punto: 1 minuto")
     print(f"[INFO] Contenedor HDFS: {HDFS_CONTAINER}")
     
     # CORRECCIÓN GPT-5: Iniciar poller en background
     print("[INIT] Iniciando poller en background...")
-    poller = Thread(target=hdfs_poller, daemon=True)
-    poller.start()
+    try:
+        poller = Thread(target=hdfs_poller, daemon=True)
+        poller.start()
+        print("[INIT] Poller thread iniciado exitosamente")
+    except Exception as e:
+        print(f"[ERROR] Error iniciando poller thread: {e}")
+        print(f"[ERROR] Tipo de error: {type(e).__name__}")
+        print(f"[ERROR] Detalles: {str(e)}")
     
     # Abrir navegador solo si está configurado
     if OPEN_BROWSER:
         Thread(target=open_browser, daemon=True).start()
     
     try:
-        # Iniciar servidor Flask
+        # Iniciar servidor Flask en puerto 5000 (acceso via Container IP)
         app.run(host="0.0.0.0", port=5000, debug=False)
     except KeyboardInterrupt:
         print("\n[INFO] Dashboard cerrado por usuario")
