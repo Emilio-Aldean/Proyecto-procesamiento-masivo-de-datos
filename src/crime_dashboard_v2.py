@@ -80,8 +80,8 @@ def get_recent_hdfs_files():
                 parquet_files = [f for f in files if f["pathSuffix"].endswith(".parquet")]
                 parquet_files.sort(key=lambda x: x["modificationTime"], reverse=True)
                 
-                # Get the 1 most recent file per district to ensure all districts represented
-                for file_info in parquet_files[:1]:
+                # Get the 10 most recent files per district to capture all recent crimes
+                for file_info in parquet_files[:10]:
                     file_path = f"{hdfs_path}/{file_info['pathSuffix']}"
                     recent_files.append({
                         "path": file_path,
