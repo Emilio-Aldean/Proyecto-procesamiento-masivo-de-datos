@@ -107,19 +107,38 @@ def download_alert_parquet_from_hdfs(file_path):
             # Use BytesIO to avoid Windows temp file permission issues
             parquet_buffer = io.BytesIO(parquet_data)
             df = pd.read_parquet(parquet_buffer)
+            
+            # Debug: Log data structure
+            log(f"DEBUG: Alert data columns: {list(df.columns)}")
+            log(f"DEBUG: Alert data shape: {df.shape}")
+            if not df.empty:
+                log(f"DEBUG: First alert row sample: {df.iloc[0].to_dict()}")
+            
             alerts = []
             
             for _, row in df.iterrows():
                 try:
+                    # Extract district properly - try multiple field names and from message
+                    district = row.get('district') or row.get('District')
+                    crime_type = row.get('crime_type') or row.get('Crime_Type') or 'Unknown'
+                    alert_message = row.get('alert_message', '')
+                    
+                    # If district is still unknown, try to extract from alert message
+                    if not district or district == 'Unknown' or pd.isna(district):
+                        # Extract district from message like "ALERTA: 3 casos de sicariato en Norte"
+                        import re
+                        district_match = re.search(r' en ([A-Za-záéíóúñÑ\s]+)$', alert_message)
+                        district = district_match.group(1).strip() if district_match else 'Unknown'
+                    
                     alert = {
-                        "id": f"ALERT-{row.get('district', 'UNK')}-{int(time.time() * 1000)}",
-                        "district": row.get('district', 'Unknown'),
-                        "crime_type": row.get('crime_type', 'Unknown'),
+                        "id": f"ALERT-{district}-{int(time.time() * 1000)}",
+                        "district": district,
+                        "crime_type": crime_type,
                         "crime_count": int(row.get('crime_count', 0)),
-                        "alert_level": row.get('alert_level', 'MEDIUM'),
-                        "alert_message": row.get('alert_message', 'Security alert detected'),
-                        "alert_time": row.get('alert_time', datetime.now().isoformat()),
-                        "is_critical": bool(row.get('is_critical', False)),
+                        "alert_level": row.get('alert_level', 'CRITICAL'),
+                        "alert_message": row.get('alert_message', f'Security alert in {district}'),
+                        "alert_time": str(row.get('alert_time', datetime.now().isoformat())),
+                        "is_critical": bool(row.get('is_critical', True)),
                         "added_at": time.time()
                     }
                     alerts.append(alert)

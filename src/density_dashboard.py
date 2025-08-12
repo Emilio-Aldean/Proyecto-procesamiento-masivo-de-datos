@@ -105,20 +105,26 @@ def download_density_parquet_from_hdfs(file_path):
             
             for _, row in df.iterrows():
                 try:
-                    # Parse crime_types_list if it exists
+                    # Parse crime_types_list if it exists and convert to regular list
                     crime_types_list = row.get('crime_types_list', [])
                     if isinstance(crime_types_list, str):
                         try:
                             crime_types_list = json.loads(crime_types_list)
                         except:
                             crime_types_list = [crime_types_list]
+                    else:
+                        # Convert numpy array to regular Python list and remove duplicates
+                        crime_types_list = list(crime_types_list) if hasattr(crime_types_list, 'tolist') else list(crime_types_list)
+                    
+                    # Remove duplicates while preserving order and get unique crime types
+                    unique_crime_types = list(dict.fromkeys(crime_types_list))  # Preserves order, removes duplicates
                     
                     record = {
                         "district": row.get('district', 'Unknown'),
                         "total_crimes": int(row.get('total_crimes', 0)),
-                        "crime_type_variety": int(row.get('crime_type_variety', 0)),
+                        "crime_type_variety": len(unique_crime_types),  # Use actual unique count
                         "crime_density_score": float(row.get('crime_density_score', 0)),
-                        "crime_types_list": crime_types_list,
+                        "crime_types_list": unique_crime_types,  # Use unique crime types only
                         "last_updated": row.get('last_updated', datetime.now().isoformat()),
                         "date_partition": row.get('date_partition', datetime.now().strftime("%Y-%m-%d"))
                     }
@@ -161,6 +167,15 @@ def update_density_cache():
                     density_data = all_new_data
                     
                 log(f"Updated density data: {len(density_data)} districts analyzed")
+                
+                # Debug: Log current density data summary
+                if density_data:
+                    total_crimes = sum(d["total_crimes"] for d in density_data)
+                    log(f"DEBUG: Total crimes across all districts: {total_crimes}")
+                    for d in density_data:
+                        log(f"DEBUG: {d['district']}: {d['total_crimes']} crimes, density {d['crime_density_score']}")
+                else:
+                    log("DEBUG: No density data available")
             else:
                 log("No recent density files found")
             
