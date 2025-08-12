@@ -300,7 +300,7 @@ def read_fresh_hdfs_files():
             hdfs_path = f"/crime-data/processed/date_partition={current_date}/district={district}"
             try:
                 # Usar WebHDFS REST API para listar archivos
-                webhdfs_url = f"http://namenode:9870/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
+                webhdfs_url = f"http://localhost:9870/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
                 response = requests.get(webhdfs_url, timeout=10)
                 
                 if response.status_code == 200:
@@ -710,10 +710,20 @@ def read_parquet_from_webhdfs(hdfs_file_path):
         import tempfile
         
         # Usar WebHDFS REST API para leer el archivo
-        webhdfs_url = f"http://namenode:9870/webhdfs/v1{hdfs_file_path}?op=OPEN"
+        webhdfs_url = f"http://localhost:9870/webhdfs/v1{hdfs_file_path}?op=OPEN"
         
         print(f"[DEBUG] Descargando via WebHDFS: {hdfs_file_path}")
-        response = requests.get(webhdfs_url, timeout=30)
+        # Handle WebHDFS redirect to DataNode - don't follow redirects automatically
+        response = requests.get(webhdfs_url, timeout=30, allow_redirects=False)
+        
+        # If redirected to DataNode, modify URL to use localhost
+        if response.status_code == 307 and 'Location' in response.headers:
+            redirect_url = response.headers['Location']
+            # Replace datanode1:9864 with localhost:9864
+            if 'datanode1:9864' in redirect_url:
+                redirect_url = redirect_url.replace('datanode1:9864', 'localhost:9864')
+            print(f"[DEBUG] Siguiendo redirect a: localhost:9864")
+            response = requests.get(redirect_url, timeout=30)
         
         if response.status_code == 200:
             # Crear archivo temporal para procesar el Parquet
@@ -840,7 +850,7 @@ def crimes_realtime():
             
             try:
                 # Listar archivos usando WebHDFS
-                webhdfs_url = f"http://namenode:9870/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
+                webhdfs_url = f"http://localhost:9870/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
                 response = requests.get(webhdfs_url, timeout=10)
                 
                 if response.status_code == 200:
@@ -856,8 +866,16 @@ def crimes_realtime():
                         print(f"[API] Descargando: {latest_file['pathSuffix'][:50]}...")
                         
                         # Descargar archivo usando WebHDFS
-                        download_url = f"http://namenode:9870/webhdfs/v1{file_path}?op=OPEN"
-                        download_response = requests.get(download_url, timeout=30)
+                        download_url = f"http://localhost:9870/webhdfs/v1{file_path}?op=OPEN"
+                        # Handle WebHDFS redirect to DataNode
+                        download_response = requests.get(download_url, timeout=30, allow_redirects=False)
+                        
+                        # If redirected to DataNode, modify URL to use localhost
+                        if download_response.status_code == 307 and 'Location' in download_response.headers:
+                            redirect_url = download_response.headers['Location']
+                            if 'datanode1:9864' in redirect_url:
+                                redirect_url = redirect_url.replace('datanode1:9864', 'localhost:9864')
+                            download_response = requests.get(redirect_url, timeout=30)
                         
                         if download_response.status_code == 200:
                             # Parsear Parquet
@@ -865,7 +883,7 @@ def crimes_realtime():
                             table = pq.read_table(parquet_data)
                             df = table.to_pandas()
                             
-                            print(f"[API] ✅ Parseado: {len(df)} registros de {district}")
+                            print(f"[API] Parseado: {len(df)} registros de {district}")
                             
                             # Procesar registros
                             for _, row in df.iterrows():
@@ -920,14 +938,14 @@ def crimes_realtime():
                 print(f"[API] Error creando feature: {e}")
                 continue
         
-        print(f"[API] ✅ RETORNANDO {len(features)} CRÍMENES REALES DE HDFS")
+        print(f"[API] RETORNANDO {len(features)} CRIMENES REALES DE HDFS")
         return jsonify({
             "type": "FeatureCollection",
             "features": features
         })
         
     except Exception as e:
-        print(f"[API] ❌ ERROR CRÍTICO: {e}")
+        print(f"[API] ERROR CRITICO: {e}")
         return jsonify({
             "type": "FeatureCollection",
             "features": [],
