@@ -49,39 +49,39 @@ CONFIG = {
 # Zonas geográficas de Guayaquil y Samborondón - COORDENADAS ANTERIORES (FUNCIONABAN MEJOR)
 DISTRICTS = {
     "Centro": {
-        # Centro histórico de Guayaquil - ajuste fino: un poco más arriba y un poco más a la izquierda
-        "lat_range": (-2.195, -2.175),
-        "lon_range": (-79.910, -79.890),
+        # Centro histórico de Guayaquil - reducido ligeramente hacia la derecha para evitar agua
+        "lat_range": (-2.175, -2.140),
+        "lon_range": (-79.930, -79.890),
         "weight": 25
     },
     "Norte": {
-        # Zona norte de Guayaquil - movido más al norte para evitar agua
-        "lat_range": (-2.160, -2.130),
-        "lon_range": (-79.900, -79.880),
+        # Zona norte de Guayaquil - expandido más a la izquierda para alcanzar Monte Sinaí
+        "lat_range": (-2.140, -2.080),
+        "lon_range": (-80.000, -79.870),
         "weight": 20
     },
     "Sur": {
-        # Zona sur de Guayaquil - áreas como Guasmo, Febres Cordero
-        "lat_range": (-2.230, -2.200),
-        "lon_range": (-79.920, -79.890),
+        # Zona sur de Guayaquil - reducido ligeramente a la derecha para evitar agua
+        "lat_range": (-2.250, -2.175),
+        "lon_range": (-79.950, -79.890),
         "weight": 20
     },
     "Samborondón": {
-        # Cantón Samborondón - ajustado para evitar agua
+        # Cantón Samborondón - ajustado un poco a la derecha (corrección del exceso izquierdo)
         "lat_range": (-1.970, -1.950),
         "lon_range": (-79.740, -79.720),
         "weight": 15
     },
     "Durán": {
-        # Cantón Durán - al este del río Guayas, frente a Guayaquil
-        "lat_range": (-2.180, -2.160),
-        "lon_range": (-79.840, -79.810),
-        "weight": 10
+        # Cantón Durán - expandido ligeramente en todas las direcciones
+        "lat_range": (-2.185, -2.155),
+        "lon_range": (-79.845, -79.805),
+        "weight": 15
     },
     "Vía a la Costa": {
-        # Vía a la Costa - ajustado un poco a la izquierda para posición correcta
-        "lat_range": (-2.220, -2.180),
-        "lon_range": (-80.020, -79.970),
+        # Zona oeste hacia la costa - expandido un poco más a la izquierda
+        "lat_range": (-2.210, -2.170),
+        "lon_range": (-80.070, -79.950),
         "weight": 10
     }
 }
