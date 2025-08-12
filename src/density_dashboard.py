@@ -59,7 +59,7 @@ def get_recent_density_files():
                     })
             
             recent_files.sort(key=lambda x: x["modified"], reverse=True)
-            return recent_files[:5]  # Return 5 most recent density files
+            return recent_files[:10]  # Return 10 most recent density files for comprehensive analysis
             
     except Exception as e:
         log(f"Error listing density files: {e}")
@@ -94,6 +94,13 @@ def download_density_parquet_from_hdfs(file_path):
             import io
             parquet_buffer = io.BytesIO(parquet_data)
             df = pd.read_parquet(parquet_buffer)
+            
+            # Debug: Log data structure
+            log(f"DEBUG: Density data columns: {list(df.columns)}")
+            log(f"DEBUG: Density data shape: {df.shape}")
+            if not df.empty:
+                log(f"DEBUG: First row sample: {df.iloc[0].to_dict()}")
+            
             density_records = []
             
             for _, row in df.iterrows():
@@ -113,7 +120,7 @@ def download_density_parquet_from_hdfs(file_path):
                         "crime_density_score": float(row.get('crime_density_score', 0)),
                         "crime_types_list": crime_types_list,
                         "last_updated": row.get('last_updated', datetime.now().isoformat()),
-                        "date_partition": row.get('date_partition', today)
+                        "date_partition": row.get('date_partition', datetime.now().strftime("%Y-%m-%d"))
                     }
                     density_records.append(record)
                 except Exception as e:

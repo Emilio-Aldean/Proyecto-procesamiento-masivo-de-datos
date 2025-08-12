@@ -43,44 +43,41 @@ def get_recent_alert_files():
     from datetime import timezone
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     
-    try:
-        list_url = f"{WEBHDFS_URL}/webhdfs/v1{HDFS_ALERTS_PATH}/date_partition={today}?op=LISTSTATUS"
-        response = requests.get(list_url, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            directories = data.get("FileStatuses", {}).get("FileStatus", [])
+    # Get districts dynamically from HDFS
+    districts = ["Centro", "Norte", "Sur", "Samborondón", "Durán", "Vía a la Costa"]
+    
+    recent_files = []
+    
+    for district in districts:
+        try:
+            hdfs_path = f"{HDFS_ALERTS_PATH}/date_partition={today}/district={district}"
+            list_url = f"{WEBHDFS_URL}/webhdfs/v1{hdfs_path}?op=LISTSTATUS"
             
-            recent_files = []
-            for dir_info in directories:
-                if dir_info["type"] == "DIRECTORY":
-                    district = dir_info["pathSuffix"]
-                    district_path = f"{HDFS_ALERTS_PATH}/date_partition={today}/{district}"
+            response = requests.get(list_url, timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                files = data.get("FileStatuses", {}).get("FileStatus", [])
+                
+                # Get Parquet files sorted by modification time
+                parquet_files = [f for f in files if f["pathSuffix"].endswith(".parquet")]
+                parquet_files.sort(key=lambda x: x["modificationTime"], reverse=True)
+                
+                # Get the 3 most recent files per district for alerts
+                for file_info in parquet_files[:3]:
+                    file_path = f"{hdfs_path}/{file_info['pathSuffix']}"
+                    recent_files.append({
+                        "path": file_path,
+                        "district": district,
+                        "modified": file_info["modificationTime"]
+                    })
                     
-                    try:
-                        files_url = f"{WEBHDFS_URL}/webhdfs/v1{district_path}?op=LISTSTATUS"
-                        files_response = requests.get(files_url, timeout=10)
-                        if files_response.status_code == 200:
-                            files_data = files_response.json()
-                            files = files_data.get("FileStatuses", {}).get("FileStatus", [])
-                            
-                            for file_info in files:
-                                if file_info["pathSuffix"].endswith(".parquet"):
-                                    file_path = f"{district_path}/{file_info['pathSuffix']}"
-                                    recent_files.append({
-                                        "path": file_path,
-                                        "district": district,
-                                        "modified": file_info["modificationTime"]
-                                    })
-                    except Exception as e:
-                        log(f"Error listing files for {district}: {e}")
-                        continue
-            
-            recent_files.sort(key=lambda x: x["modified"], reverse=True)
-            return recent_files[:10]  # Return 10 most recent alert files
-            
-    except Exception as e:
-        log(f"Error listing alert directories: {e}")
-        return []
+        except Exception as e:
+            log(f"Error listing alert files for {district}: {e}")
+            continue
+    
+    # Return all files sorted by modification time
+    recent_files.sort(key=lambda x: x["modified"], reverse=True)
+    return recent_files
 
 def download_alert_parquet_from_hdfs(file_path):
     """Download and parse alert Parquet file from HDFS"""
@@ -107,33 +104,31 @@ def download_alert_parquet_from_hdfs(file_path):
             return []
         
         if parquet_data:
-            with tempfile.NamedTemporaryFile() as temp_file:
-                temp_file.write(parquet_data)
-                temp_file.flush()
-                
-                df = pd.read_parquet(temp_file.name)
-                alerts = []
-                
-                for _, row in df.iterrows():
-                    try:
-                        alert = {
-                            "id": f"ALERT-{row.get('district', 'UNK')}-{int(time.time() * 1000)}",
-                            "district": row.get('district', 'Unknown'),
-                            "crime_type": row.get('crime_type', 'Unknown'),
-                            "crime_count": int(row.get('crime_count', 0)),
-                            "alert_level": row.get('alert_level', 'MEDIUM'),
-                            "alert_message": row.get('alert_message', 'Security alert detected'),
-                            "alert_time": row.get('alert_time', datetime.now().isoformat()),
-                            "is_critical": bool(row.get('is_critical', False)),
-                            "added_at": time.time()
-                        }
-                        alerts.append(alert)
-                    except Exception as e:
-                        log(f"Error parsing alert record: {e}")
-                        continue
-                
-                log(f"Parsed {len(alerts)} alerts from {file_path}")
-                return alerts
+            # Use BytesIO to avoid Windows temp file permission issues
+            parquet_buffer = io.BytesIO(parquet_data)
+            df = pd.read_parquet(parquet_buffer)
+            alerts = []
+            
+            for _, row in df.iterrows():
+                try:
+                    alert = {
+                        "id": f"ALERT-{row.get('district', 'UNK')}-{int(time.time() * 1000)}",
+                        "district": row.get('district', 'Unknown'),
+                        "crime_type": row.get('crime_type', 'Unknown'),
+                        "crime_count": int(row.get('crime_count', 0)),
+                        "alert_level": row.get('alert_level', 'MEDIUM'),
+                        "alert_message": row.get('alert_message', 'Security alert detected'),
+                        "alert_time": row.get('alert_time', datetime.now().isoformat()),
+                        "is_critical": bool(row.get('is_critical', False)),
+                        "added_at": time.time()
+                    }
+                    alerts.append(alert)
+                except Exception as e:
+                    log(f"Error parsing alert record: {e}")
+                    continue
+            
+            log(f"Parsed {len(alerts)} alerts from {file_path}")
+            return alerts
         else:
             log(f"No data received from {file_path}")
             return []
