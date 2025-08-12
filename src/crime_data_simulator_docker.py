@@ -46,17 +46,17 @@ CONFIG = {
     "crime_probabilities": [0.35, 0.25, 0.15, 0.10, 0.10, 0.05]
 }
 
-# Zonas geográficas de Guayaquil y Samborondón - COORDENADAS PRECISAS
+# Zonas geográficas de Guayaquil y Samborondón - COORDENADAS ANTERIORES (FUNCIONABAN MEJOR)
 DISTRICTS = {
     "Centro": {
-        # Centro histórico de Guayaquil - área urbana consolidada (alejado del río)
-        "lat_range": (-2.200, -2.180),
-        "lon_range": (-79.880, -79.860),
+        # Centro histórico de Guayaquil - ajuste fino: un poco más arriba y un poco más a la izquierda
+        "lat_range": (-2.195, -2.175),
+        "lon_range": (-79.910, -79.890),
         "weight": 25
     },
     "Norte": {
-        # Zona norte de Guayaquil - áreas como Alborada, Kennedy
-        "lat_range": (-2.170, -2.140),
+        # Zona norte de Guayaquil - movido más al norte para evitar agua
+        "lat_range": (-2.160, -2.130),
         "lon_range": (-79.900, -79.880),
         "weight": 20
     },
@@ -67,9 +67,9 @@ DISTRICTS = {
         "weight": 20
     },
     "Samborondón": {
-        # Cantón Samborondón - zona residencial al norte del río Daule
-        "lat_range": (-1.980, -1.940),
-        "lon_range": (-79.750, -79.700),
+        # Cantón Samborondón - ajustado para evitar agua
+        "lat_range": (-1.970, -1.950),
+        "lon_range": (-79.740, -79.720),
         "weight": 15
     },
     "Durán": {
@@ -79,9 +79,9 @@ DISTRICTS = {
         "weight": 10
     },
     "Vía a la Costa": {
-        # Vía a la Costa - carretera hacia la costa, zona oeste de Guayaquil
+        # Vía a la Costa - ajustado un poco a la izquierda para posición correcta
         "lat_range": (-2.220, -2.180),
-        "lon_range": (-80.100, -80.050),
+        "lon_range": (-80.020, -79.970),
         "weight": 10
     }
 }
