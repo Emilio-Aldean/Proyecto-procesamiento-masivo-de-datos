@@ -46,36 +46,42 @@ CONFIG = {
     "crime_probabilities": [0.35, 0.25, 0.15, 0.10, 0.10, 0.05]
 }
 
-# Zonas geográficas de Guayaquil y Samborondón
+# Zonas geográficas de Guayaquil y Samborondón - COORDENADAS PRECISAS
 DISTRICTS = {
     "Centro": {
-        "lat_range": (-2.20, -2.18),
-        "lon_range": (-79.89, -79.87),
+        # Centro histórico de Guayaquil - área urbana consolidada (alejado del río)
+        "lat_range": (-2.200, -2.180),
+        "lon_range": (-79.880, -79.860),
         "weight": 25
     },
     "Norte": {
-        "lat_range": (-2.16, -2.14),
-        "lon_range": (-79.90, -79.88),
+        # Zona norte de Guayaquil - áreas como Alborada, Kennedy
+        "lat_range": (-2.170, -2.140),
+        "lon_range": (-79.900, -79.880),
         "weight": 20
     },
     "Sur": {
-        "lat_range": (-2.22, -2.20),
-        "lon_range": (-79.91, -79.89),
+        # Zona sur de Guayaquil - áreas como Guasmo, Febres Cordero
+        "lat_range": (-2.230, -2.200),
+        "lon_range": (-79.920, -79.890),
         "weight": 20
     },
     "Samborondón": {
-        "lat_range": (-2.15, -2.13),
-        "lon_range": (-79.87, -79.85),
+        # Cantón Samborondón - zona residencial al norte del río Daule
+        "lat_range": (-1.980, -1.940),
+        "lon_range": (-79.750, -79.700),
         "weight": 15
     },
     "Durán": {
-        "lat_range": (-2.18, -2.16),
-        "lon_range": (-79.85, -79.83),
+        # Cantón Durán - al este del río Guayas, frente a Guayaquil
+        "lat_range": (-2.180, -2.160),
+        "lon_range": (-79.840, -79.810),
         "weight": 10
     },
     "Vía a la Costa": {
-        "lat_range": (-2.14, -2.12),
-        "lon_range": (-79.92, -79.90),
+        # Vía a la Costa - carretera hacia la costa, zona oeste de Guayaquil
+        "lat_range": (-2.220, -2.180),
+        "lon_range": (-80.100, -80.050),
         "weight": 10
     }
 }
