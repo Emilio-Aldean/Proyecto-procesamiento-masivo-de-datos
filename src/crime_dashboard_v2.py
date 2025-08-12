@@ -185,12 +185,14 @@ def update_crimes_cache():
             
             new_crimes = []
             for file_info in recent_files:
+                log(f"Processing file: {file_info['path']} (district: {file_info['district']})")
                 crimes_from_file = download_parquet_from_hdfs(file_info["path"])
                 new_crimes.extend(crimes_from_file)
+                log(f"Total crimes so far: {len(new_crimes)}")
                 
-                # Limit to prevent overwhelming the map
-                if len(new_crimes) >= MAX_CRIMES_PER_UPDATE:
-                    break
+                # Remove the limit to ensure all districts are processed
+                # if len(new_crimes) >= MAX_CRIMES_PER_UPDATE:
+                #     break
             
             # Add new crimes to active list
             if new_crimes:
@@ -202,7 +204,7 @@ def update_crimes_cache():
                         if crime["id"] not in existing_ids
                     ]
                     
-                    active_crimes.extend(unique_new_crimes[:MAX_CRIMES_PER_UPDATE])
+                    active_crimes.extend(unique_new_crimes)  # Add all unique crimes from all districts
                     
                 log(f"Added {len(unique_new_crimes)} new crimes. Total active: {len(active_crimes)}")
             
